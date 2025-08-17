@@ -1,0 +1,43 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: FastAPI on Lambda (no DB)
+Globals:
+  Function:
+    Runtime: python3.11
+    Timeout: 10
+    MemorySize: 512
+Resources:
+  Api:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      CorsConfiguration:
+        AllowOrigins:
+        - http://localhost:5173
+        - https://www.mycoins.pl
+        - https://<your-amplify>.amplifyapp.com
+        AllowHeaders:
+        - Content-Type
+        - Authorization
+        AllowMethods:
+        - GET
+        - OPTIONS
+  AppFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: AppFunction
+      Handler: app.handler
+      Events:
+        ProxyApi:
+          Type: HttpApi
+          Properties:
+            ApiId:
+              Ref: Api
+            Path: /{proxy+}
+            Method: ANY
+    Metadata:
+      SamResourceId: AppFunction
+Outputs:
+  HttpApiUrl:
+    Description: Base URL for API
+    Value:
+      Fn::Sub: https://${Api}.execute-api.${AWS::Region}.amazonaws.com

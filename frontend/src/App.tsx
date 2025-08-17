@@ -8,6 +8,7 @@ const API_BASE = import.meta.env.VITE_API_BASE as string
 type HelloResponse = { message: string }
 
 async function getHello(name?: string): Promise<HelloResponse> {
+  console.log(import.meta.env.VITE_API_BASE)
   const url = name ? `${API_BASE}/hello?name=${encodeURIComponent(name)}` : `${API_BASE}/hello`
   const res = await fetch(url)
   if (!res.ok) {
