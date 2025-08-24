@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: FastAPI on Lambda (no DB)
+Description: FastAPI on Lambda with Aurora Data API
 
 Globals:
   Function:
@@ -17,20 +17,28 @@ Resources:
           - http://localhost:5173
           - https://www.mycoins.pl
           - https://<your-amplify>.amplifyapp.com
-        AllowHeaders: [Content-Type, Authorization]
-        AllowMethods: [GET, OPTIONS]
+        AllowHeaders:
+          - Content-Type
+          - Authorization
+        AllowMethods:
+          - GET
+          - POST
+          - OPTIONS
 
   AppFunction:
     Type: AWS::Serverless::Function
     Properties:
       CodeUri: .
       Handler: app.handler
+
       Environment:
         Variables:
           DB_CLUSTER_ARN: "arn:aws:rds:eu-west-2:603013158700:cluster:database-1"
-          DB_SECRET_ARN:  "arn:aws:secretsmanager:eu-west-2:603013158700:secret:rds!cluster-fa5790c8-6389-4d2f-973c-b36e81d62670-QLIq17"
-          DB_NAME:        "database-1"                                                       
+          DB_SECRET_ARN: "arn:aws:secretsmanager:eu-west-2:603013158700:secret:rds!cluster-fa5790c8-6389-4d2f-973c-b36e81d62670-QLIq17"
+          DB_NAME: "appdb"
+
       Policies:
+        - AWSLambdaBasicExecutionRole
         - Statement:
             - Effect: Allow
               Action:
@@ -39,10 +47,11 @@ Resources:
                 - rds-data:BeginTransaction
                 - rds-data:CommitTransaction
                 - rds-data:RollbackTransaction
-              Resource: "*"                 # (tighten to your cluster ARN later)
+              Resource: "*"
             - Effect: Allow
               Action: secretsmanager:GetSecretValue
-              Resource: "arn:aws:secretsmanager:eu-west-2:YOUR_ACCOUNT_ID:secret:*"     # or the exact secret ARN
+              Resource: arn:aws:secretsmanager:eu-west-2:603013158700:secret:rds!cluster-fa5790c8-6389-4d2f-973c-b36e81d62670-QLIq17
+
       Events:
         ProxyApi:
           Type: HttpApi
@@ -50,8 +59,6 @@ Resources:
             ApiId: !Ref Api
             Path: /{proxy+}
             Method: ANY
-
-      
 
 Outputs:
   HttpApiUrl:

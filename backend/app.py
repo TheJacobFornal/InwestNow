@@ -1,156 +1,65 @@
+# server.py
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from mangum import Mangum
-from pydantic import BaseModel, Field
-from datetime import date
+import mysql.connector
+from mysql.connector import Error
+from typing import List, Dict, Any
 import os
-import boto3
-from typing import List, Any, Dict
+import uvicorn
 
-# ---------- CORS ----------
-ALLOWED_ORIGINS = [
-    "http://localhost:5173",
-    "https://www.mycoins.pl",
-    "https://<your-amplify>.amplifyapp.com",
-]
+# === DB config (your provided values; use env vars in real projects) ===
+DB_HOST = os.getenv("DB_HOST", "test1.c7ioa646wm47.eu-west-2.rds.amazonaws.com")
+DB_USER = os.getenv("DB_USER", "admin")
+DB_PASS = os.getenv("DB_PASS", "Adria09?Jakub01?")
+DB_NAME = os.getenv("DB_NAME", "company")
+DB_PORT = int(os.getenv("DB_PORT", "3306"))
 
-app = FastAPI(title="InwestNow API")
+app = FastAPI(title="Company API")
+
+# Allow your Vite dev server to call this API
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ---------- Data API client & helpers ----------
-RDS = boto3.client("rds-data")
-CLUSTER_ARN = os.environ["DB_CLUSTER_ARN"]
-SECRET_ARN = os.environ["DB_SECRET_ARN"]
-DB_NAME = os.environ["DB_NAME"]
-TABLE_NAME = "holdings"  # you can rename if you like
-
-def exec_sql(sql: str, params: list | None = None) -> Dict[str, Any]:
-    return RDS.execute_statement(
-        resourceArn=CLUSTER_ARN,
-        secretArn=SECRET_ARN,
-        database=DB_NAME,
-        sql=sql,
-        parameters=params or [],
+def get_conn():
+    return mysql.connector.connect(
+        host=DB_HOST, user=DB_USER, password=DB_PASS,
+        database=DB_NAME, port=DB_PORT, connection_timeout=5
     )
 
-def rows_from(resp: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """
-    Convert Data API response to list[dict] using column names.
-    """
-    cols = [c["name"] for c in resp.get("columnMetadata", [])]
-    out: List[Dict[str, Any]] = []
-    for rec in resp.get("records", []):
-        row: Dict[str, Any] = {}
-        for i, cell in enumerate(rec):
-            # cell is like {'stringValue': 'USD'} or {'doubleValue': 1.23}
-            val = next(iter(cell.values()))
-            row[cols[i] if i < len(cols) else f"c{i}"] = val
-        out.append(row)
-    return out
+def dict_row(cursor, row) -> Dict[str, Any]:
+    return {desc[0]: value for desc, value in zip(cursor.description, row)}
 
-def ensure_table():
-    # Currency   VARCHAR(16)
-    # PurchaseDate DATE
-    # Amount     DOUBLE
-    # Price      DOUBLE
-    # Value      DOUBLE
-    sql = f"""
-    CREATE TABLE IF NOT EXISTS {TABLE_NAME} (
-      id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
-      Currency VARCHAR(16) NOT NULL,
-      PurchaseDate DATE NOT NULL,
-      Amount DOUBLE NOT NULL,
-      Price DOUBLE NOT NULL,
-      Value DOUBLE NOT NULL,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
-    """
-    exec_sql(sql)
+@app.get("/api/health")
+def health():
+    """Check DB connection and return server time"""
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT NOW();")
+        server_time = cur.fetchone()[0]
+        cur.close(); conn.close()
+        return {"ok": True, "server_time": str(server_time)}
+    except Error as e:
+        raise HTTPException(status_code=500, detail=f"DB error: {e}")
 
-# Create table on cold start (Lambda) / app boot (local)
-ensure_table()
+@app.get("/api/employees")
+def list_employees():
+    """Return all employees from the existing employees table"""
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM employees ORDER BY id DESC;")
+        rows = cur.fetchall()
+        items = [dict_row(cur, row) for row in rows]
+        cur.close(); conn.close()
+        return {"items": items, "count": len(items)}
+    except Error as e:
+        raise HTTPException(status_code=500, detail=f"DB error: {e}")
 
-# ---------- Schemas ----------
-class HoldingIn(BaseModel):
-    currency: str = Field(..., min_length=1, max_length=16, alias="Currency")
-    purchaseDate: date = Field(..., alias="PurchaseDate")
-    amount: float = Field(..., alias="Amount")
-    price: float = Field(..., alias="Price")
-    value: float = Field(..., alias="Value")
-
-    class Config:
-        populate_by_name = True  # accept either API names or Pydantic field names
-
-class Holding(HoldingIn):
-    id: int
-    created_at: str | None = None
-
-# ---------- Routes ----------
-@app.get("/hello")
-def hello(name: str | None = None):
-    who = name or "Jacob"
-    return {"message": f"Hello v2 {who}"}
-
-@app.post("/holdings", response_model=Holding)
-def create_holding(h: HoldingIn):
-    sql = f"""
-      INSERT INTO {TABLE_NAME} (Currency, PurchaseDate, Amount, Price, Value)
-      VALUES (:currency, :pdate, :amount, :price, :val)
-    """
-    params = [
-        {"name": "currency", "value": {"stringValue": h.currency}},
-        {"name": "pdate",    "value": {"stringValue": h.purchaseDate.isoformat()}},  # MySQL DATE accepts 'YYYY-MM-DD'
-        {"name": "amount",   "value": {"doubleValue": float(h.amount)}},
-        {"name": "price",    "value": {"doubleValue": float(h.price)}},
-        {"name": "val",      "value": {"doubleValue": float(h.value)}},
-    ]
-    exec_sql(sql, params)
-
-    # Return the last inserted row (Aurora Data API doesn't return insert id directly)
-    out = exec_sql(
-        f"SELECT * FROM {TABLE_NAME} WHERE Currency=:c AND PurchaseDate=:d ORDER BY id DESC LIMIT 1",
-        [
-            {"name": "c", "value": {"stringValue": h.currency}},
-            {"name": "d", "value": {"stringValue": h.purchaseDate.isoformat()}},
-        ],
-    )
-    rows = rows_from(out)
-    if not rows:
-        raise HTTPException(status_code=500, detail="Insert succeeded but row not found")
-    # map DB column names -> response model fields
-    r = rows[0]
-    return {
-        "id": r["id"],
-        "currency": r["Currency"],
-        "purchaseDate": r["PurchaseDate"],
-        "amount": r["Amount"],
-        "price": r["Price"],
-        "value": r["Value"],
-        "created_at": r.get("created_at"),
-    }
-
-@app.get("/holdings", response_model=list[Holding])
-def list_holdings(limit: int = 100):
-    out = exec_sql(f"SELECT * FROM {TABLE_NAME} ORDER BY id DESC LIMIT :lim",
-                   [{"name": "lim", "value": {"longValue": limit}}])
-    rows = rows_from(out)
-    return [
-        {
-            "id": r["id"],
-            "currency": r["Currency"],
-            "purchaseDate": r["PurchaseDate"],
-            "amount": r["Amount"],
-            "price": r["Price"],
-            "value": r["Value"],
-            "created_at": r.get("created_at"),
-        }
-        for r in rows
-    ]
-
-# ---------- Lambda handler ----------
-handler = Mangum(app)
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8000)

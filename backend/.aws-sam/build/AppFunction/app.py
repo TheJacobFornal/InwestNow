@@ -73,7 +73,7 @@ def ensure_table():
     exec_sql(sql)
 
 # Create table on cold start (Lambda) / app boot (local)
-ensure_table()
+
 
 # ---------- Schemas ----------
 class HoldingIn(BaseModel):
@@ -98,6 +98,7 @@ def hello(name: str | None = None):
 
 @app.post("/holdings", response_model=Holding)
 def create_holding(h: HoldingIn):
+    ensure_table()
     sql = f"""
       INSERT INTO {TABLE_NAME} (Currency, PurchaseDate, Amount, Price, Value)
       VALUES (:currency, :pdate, :amount, :price, :val)
@@ -136,6 +137,7 @@ def create_holding(h: HoldingIn):
 
 @app.get("/holdings", response_model=list[Holding])
 def list_holdings(limit: int = 100):
+    ensure_table()
     out = exec_sql(f"SELECT * FROM {TABLE_NAME} ORDER BY id DESC LIMIT :lim",
                    [{"name": "lim", "value": {"longValue": limit}}])
     rows = rows_from(out)
